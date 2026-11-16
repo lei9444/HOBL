@@ -4,7 +4,9 @@
 param(
     [string]$logFile = "",
     [string]$startTime = (Get-Date).ToString("o"),
-    [string]$Workers = "0"
+    [string]$Workers = "0",
+    [ValidateRange(1, 2147483647)]
+    [int]$Loop = 1
 )
 # Require PowerShell > 7
 $required = [version]"7.0"
@@ -90,7 +92,9 @@ if (-not (Test-Path $LOG_DIR)) {
     New-Item -ItemType Directory -Path $LOG_DIR -Force | Out-Null
 }
 
-if (-not $logFile) { $logFile = "$LOG_DIR\fast_api_run.log" }
+$loopDir = Join-Path $LOG_DIR ("fast_api_loop_{0:D2}_{1}" -f $Loop, [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $loopDir -ErrorAction Stop | Out-Null
+if (-not $logFile) { $logFile = "$loopDir\fast_api_run.log" }
 function log {
     [CmdletBinding()] Param([Parameter(ValueFromPipeline)] $msg)
     process {
@@ -338,22 +342,28 @@ if ($LASTEXITCODE -ne 0) {
 $env:PIP_INDEX_URL = "https://packagefeedproxy.microsoft.io/pypi/simple"
 "Set PIP_INDEX_URL for build isolation: $env:PIP_INDEX_URL" | log
 
+$buildProbe = Join-Path $PSScriptRoot "fast_api_build_probe.py"
+if (-not (Test-Path $buildProbe -PathType Leaf)) {
+    " ERROR - Build timing helper missing: $buildProbe. Run this branch through HOBL to refresh run resources." | log
+    Exit 1
+}
+
 "Building FastAPI..." | log
 Write-RunPhaseMarker "phase.run_prep.end"
 Write-RunPhaseMarker "phase.run_build.start"
 # Redirect output to a per-phase log so it is preserved in the results share.
 # Measure-Command discards pipeline output, and the RPC buffer is lost on timeout,
 # so file redirection is the only way to capture build/test output.
-$buildLog = "$LOG_DIR\fast_api_build.log"
+$buildLog = "$loopDir\fast_api_build.log"
 "Build output: $buildLog" | log
 $buildTime = (Measure-Command {
-    & $venvPython -m build *> $buildLog
+    & $venvPython $buildProbe --report-prefix "$loopDir\build_phases" *> $buildLog
 }).TotalSeconds
 $buildExitCode = $LASTEXITCODE
 Write-RunPhaseMarker "phase.run_build.end"
 if ($buildExitCode -ne 0) {
     " ERROR - Build failed. See $buildLog for details." | log
-    Exit 1
+    Exit $buildExitCode
 }
 $buildTime = [math]::Round($buildTime, 2)
 "Build completed in ${buildTime}s" | log
@@ -364,7 +374,7 @@ $env:PYTHONIOENCODING = "utf-8"
 
 "Running tests with coverage..." | log
 Write-RunPhaseMarker "phase.run_test.start"
-$testLog = "$LOG_DIR\fast_api_test.log"
+$testLog = "$loopDir\fast_api_test.log"
 "Test output: $testLog" | log
 # Both platforms use pytest-cov and the same release test directories.
 $testTime = (Measure-Command {
@@ -404,6 +414,7 @@ test_time,$testTime
 "@
 
 Set-Content -Path $METRICS_FILE -Value $metricsContent -NoNewline
+Set-Content -Path "$loopDir\fast_api_results.csv" -Value $metricsContent -NoNewline
 "Metrics saved to: $METRICS_FILE" | log
 
 $elapsedTime = ((Get-Date) - [DateTime]$startTime).TotalSeconds

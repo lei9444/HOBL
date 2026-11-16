@@ -50,6 +50,12 @@ class FastApi(core.app_scenario.Scenario):
                 self._copy_data_from_remote(self.result_dir)
             self.createPrepStatusControlFile(self.prep_version)
 
+        # File uploads preserve the prep-installed .venv; directory uploads delete it.
+        logging.info("Refreshing build timing/run files only (preserving prep state).")
+        self._upload("utilities\\open_source\\fast_api_build_probe.py", self.target, check_modified=False)
+        self._upload(f"scenarios\\windows\\{self.module}\\{self.resources}\\{self.module}_run.ps1",
+                     self.target, check_modified=False)
+
         # Call base class setUp() to dump config, call tool callbacks, and start measurment
         core.app_scenario.Scenario.setUp(self)
 
@@ -58,7 +64,7 @@ class FastApi(core.app_scenario.Scenario):
         start_time = datetime.now().astimezone().isoformat()
         for i in range(int(self.loops)):
             logging.info(f"Running loop {i + 1}")
-            self._call(["pwsh", f"{self.target}\\{self.module}_run.ps1 -startTime {start_time} -Workers {self.workers}"], timeout = 3600)
+            self._call(["pwsh", f"{self.target}\\{self.module}_run.ps1 -startTime {start_time} -Workers {self.workers} -Loop {i + 1}"], timeout = 3600)
 
 
     def tearDown(self):

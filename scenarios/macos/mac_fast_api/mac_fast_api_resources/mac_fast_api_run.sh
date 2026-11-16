@@ -3,14 +3,22 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 WORKERS="${1:-0}"
+LOOP="${2:-1}"
 LOG_DIR="/Users/Shared/hobl_data"
 METRICS_FILE="$LOG_DIR/mac_fast_api_results.csv"
-LOG_FILE="$LOG_DIR/mac_fast_api_run.log"
 
 # Create log directory if it doesn't exist
 if [ ! -d "$LOG_DIR" ]; then
     mkdir -p "$LOG_DIR"
 fi
+
+case "$LOOP" in
+    ''|*[!0-9]*|0) echo " ERROR - Invalid loop number: $LOOP"; exit 1 ;;
+esac
+LOOP_DIR=$(mktemp -d "$LOG_DIR/mac_fast_api_loop_${LOOP}_XXXXXXXX") || {
+    echo " ERROR - Cannot create per-loop result directory"; exit 1
+}
+LOG_FILE="$LOOP_DIR/mac_fast_api_run.log"
 
 log() {
     echo "$1"
@@ -168,30 +176,40 @@ log "✓ Build and test modules are available"
 export PIP_INDEX_URL="https://packagefeedproxy.microsoft.io/pypi/simple"
 log "-- Set PIP_INDEX_URL for build isolation: $PIP_INDEX_URL"
 
+BUILD_PROBE="$SCRIPT_DIR/fast_api_build_probe.py"
+if [ ! -f "$BUILD_PROBE" ]; then
+    log " ERROR - Build timing helper missing: $BUILD_PROBE. Run this branch through HOBL to refresh run resources."
+    exit 1
+fi
+
 log "-- fast_api build started"
 
 # Redirect output to a per-phase log so it is preserved in the results share.
 # Without redirection, stdout goes only to the RPC buffer and is lost on timeout.
-BUILD_LOG="$LOG_DIR/mac_fast_api_build.log"
+BUILD_LOG="$LOOP_DIR/mac_fast_api_build.log"
 log "-- Build output: $BUILD_LOG"
-/usr/bin/time -p -o "$LOG_DIR/mac_fast_api_build_time.log" "$VENV_PYTHON" -m build > "$BUILD_LOG" 2>&1
-check_status "Building Fast API"
+/usr/bin/time -p -o "$LOOP_DIR/mac_fast_api_build_time.log" "$VENV_PYTHON" "$BUILD_PROBE" --report-prefix "$LOOP_DIR/build_phases" > "$BUILD_LOG" 2>&1
+BUILD_EXIT=$?
+if [ "$BUILD_EXIT" -ne 0 ]; then
+    log " ERROR - Building Fast API failed ($BUILD_EXIT). See $BUILD_LOG"
+    exit "$BUILD_EXIT"
+fi
 
 # Parse build phase timing
-parse_time_output "$LOG_DIR/mac_fast_api_build_time.log" "build"
+parse_time_output "$LOOP_DIR/mac_fast_api_build_time.log" "build"
 
 log "-- fast_api build ended"
 
 log "-- fast_api tests started"
 
-TEST_LOG="$LOG_DIR/mac_fast_api_test.log"
+TEST_LOG="$LOOP_DIR/mac_fast_api_test.log"
 log "-- Test output: $TEST_LOG"
 export PYTHONPATH="./docs_src"
-/usr/bin/time -p -o "$LOG_DIR/mac_fast_api_test_time.log" "$VENV_PYTHON" -m pytest -n "$WORKERS" --dist loadgroup --cov --cov-context=test --cov-report=term tests scripts/tests > "$TEST_LOG" 2>&1
+/usr/bin/time -p -o "$LOOP_DIR/mac_fast_api_test_time.log" "$VENV_PYTHON" -m pytest -n "$WORKERS" --dist loadgroup --cov --cov-context=test --cov-report=term tests scripts/tests > "$TEST_LOG" 2>&1
 check_status "Running Fast API tests"
 
 # Parse test phase timing
-parse_time_output "$LOG_DIR/mac_fast_api_test_time.log" "test"
+parse_time_output "$LOOP_DIR/mac_fast_api_test_time.log" "test"
 
 log "-- fast_api tests completed"
 
@@ -213,6 +231,8 @@ log "========================================"
 # Write metrics CSV file (key,value format)
 cat > "$METRICS_FILE" << EOF
 scenario_runtime,$scenario_runtime
+build_time,$build_real
+test_time,$test_real
 build_real,$build_real
 build_user,$build_user
 build_sys,$build_sys
@@ -222,6 +242,8 @@ test_user,$test_user
 test_sys,$test_sys
 test_cputime,$test_cputime
 EOF
+cp "$METRICS_FILE" "$LOOP_DIR/mac_fast_api_results.csv"
+check_status "Saving per-loop metrics"
 
 log "✓ Metrics saved to: $METRICS_FILE"
 
