@@ -2,13 +2,16 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-LOG_DIR="/Users/Shared/hobl_data"
+LOG_DIR="${HOBL_LOG_DIR:-/Users/Shared/hobl_data}"
 METRICS_FILE="$LOG_DIR/mac_fast_api_results.csv"
 LOG_FILE="$LOG_DIR/mac_fast_api_run.log"
 
 # Create log directory if it doesn't exist
 if [ ! -d "$LOG_DIR" ]; then
-    mkdir -p "$LOG_DIR"
+    mkdir -p "$LOG_DIR" || {
+        echo " ERROR - Cannot create log directory: $LOG_DIR"
+        exit 1
+    }
 fi
 
 log() {
@@ -37,8 +40,6 @@ check_command() {
 }
 
 # Helper function to parse time output and calculate cputime
-# Args: $1 = time log file, $2 = phase name prefix (e.g., "build" or "test")
-# Sets: <prefix>_real, <prefix>_user, <prefix>_sys, <prefix>_cputime
 #
 # Time metrics explained:
 #   Real - Wall clock time from start to finish of the call. This is all elapsed time
@@ -63,61 +64,48 @@ check_command() {
 #
 parse_time_output() {
     local time_file="$1"
-    local prefix="$2"
     
     if [ ! -f "$time_file" ]; then
-        log " ERROR - Time log file not found: $time_file"
+        log " ERROR - Time log file not found: $time_file" >&2
         return 1
     fi
-    
-    # Parse the -p format output (real, user, sys on separate lines)
-    local real_val=$(grep "^real" "$time_file" | awk '{print $2}')
-    local user_val=$(grep "^user" "$time_file" | awk '{print $2}')
-    local sys_val=$(grep "^sys" "$time_file" | awk '{print $2}')
-    
-    # Calculate cputime = user + sys
-    local cputime=$(echo "$user_val + $sys_val" | bc)
-    
-    # Export values using eval for dynamic variable names
-    eval "${prefix}_real=$real_val"
-    eval "${prefix}_user=$user_val"
-    eval "${prefix}_sys=$sys_val"
-    eval "${prefix}_cputime=$cputime"
-    
-    log "✓ Parsed $prefix phase: real=${real_val}s, user=${user_val}s, sys=${sys_val}s, cputime=${cputime}s"
+    awk '
+        $1 == "real" { real = $2; have_real = 1 }
+        $1 == "user" { user = $2; have_user = 1 }
+        $1 == "sys"  { sys = $2; have_sys = 1 }
+        END {
+            if (!have_real || !have_user || !have_sys) exit 1
+            printf "%s %s %s %.2f\n", real, user, sys, user + sys
+        }
+    ' "$time_file"
 }
 
 echo "-- mac_fast_api_run.sh started $(date)" > "$LOG_FILE"
 log "-- fast_api run started"
 
-# Source profile
-if [ -f ~/.zprofile ]; then
-    source ~/.zprofile
-    check_status "Loading profile"
-else
-    echo " ERROR - ~/.zprofile not found"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)" || exit 1
+VENV_PYTHON="${HOBL_FASTAPI_PYTHON:-$SCRIPT_DIR/.venv/bin/python}"
+case "$VENV_PYTHON" in
+    /*) ;;
+    *) log " ERROR - Scenario Python must be an absolute path: $VENV_PYTHON"; exit 1 ;;
+esac
+if [ ! -x "$VENV_PYTHON" ]; then
+    log " ERROR - FastAPI scenario environment is missing: $VENV_PYTHON. Re-run prep."
     exit 1
 fi
+export VIRTUAL_ENV="$(dirname "$(dirname "$VENV_PYTHON")")"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Verify required commands are available
 log "-- Verifying required commands"
-check_command "pyenv" || exit 1
-check_command "python" || exit 1
 check_command "bash" || exit 1
 
-# Set BIN_DIR to /Users/Shared/hobl_bin
-BIN_DIR="/Users/Shared/hobl_bin/fastapi"
-
-# Set Python version
-log "-- Setting Python version"
-pyenv global 3.12.10
-check_status "Setting Python global version"
+BIN_DIR="${HOBL_FASTAPI_DIR:-$(dirname "$SCRIPT_DIR")/fastapi}"
 
 # Verify Python version
-PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}')
+PYTHON_VERSION=$("$VENV_PYTHON" --version 2>&1 | awk '{print $2}')
 if [ "$PYTHON_VERSION" != "3.12.10" ]; then
     log " ERROR - Python version is $PYTHON_VERSION, expected 3.12.10"
-    pyenv versions
     exit 1
 fi
 log "✓ Python version confirmed: $PYTHON_VERSION"
@@ -132,7 +120,7 @@ if [ ! -d "$BIN_DIR" ]; then
 fi
 log "✓ FastAPI directory exists"
 
-cd $BIN_DIR || {
+cd "$BIN_DIR" || {
     log " ERROR - Failed to change to $BIN_DIR"
     exit 1
 }
@@ -145,14 +133,24 @@ if [ ! -f "scripts/test.sh" ]; then
 fi
 log "✓ Test script found"
 
-# Verify build module is available
-python -c "import build" 2>/dev/null
+# Fail before timing if prep was skipped or another workload's environment was selected.
+"$VENV_PYTHON" -W error::DeprecationWarning - >> "$LOG_FILE" 2>&1 <<'PY'
+import build
+import coverage
+import fastapi
+import pytest
+from fastapi.testclient import TestClient
+
+if fastapi.__version__ != "0.119.1":
+    raise RuntimeError(f"Expected legacy FastAPI 0.119.1, found {fastapi.__version__}")
+print("FastAPI", fastapi.__version__, "| build", build.__version__,
+      "| coverage", coverage.__version__, "| pytest", pytest.__version__)
+PY
 if [ $? -ne 0 ]; then
-    log " ERROR - Python build module is not installed"
-    log "Please run mac_fast_api_prep.sh first"
+    log " ERROR - FastAPI scenario packages are missing or incompatible. Re-run prep."
     exit 1
 fi
-log "✓ Build module is available"
+log "✓ Build and test modules are available"
 
 # Route PEP 517 build isolation (and any pip invoked by scripts/test.sh) through the
 # approved Microsoft PyPI feed proxy. `python -m build` spins up its own isolated
@@ -160,7 +158,7 @@ log "✓ Build module is available"
 # isolated pip honors PIP_INDEX_URL. Without this it targets public PyPI, which is
 # blocked/SSL-inspected on Microsoft-managed devices (CISO Central Feed Services
 # policy) and injects network variability into build time.
-export PIP_INDEX_URL="https://packagefeedproxy.microsoft.io/pypi/simple"
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://packagefeedproxy.microsoft.io/pypi/simple}"
 log "-- Set PIP_INDEX_URL for build isolation: $PIP_INDEX_URL"
 
 log "-- fast_api build started"
@@ -169,11 +167,18 @@ log "-- fast_api build started"
 # Without redirection, stdout goes only to the RPC buffer and is lost on timeout.
 BUILD_LOG="$LOG_DIR/mac_fast_api_build.log"
 log "-- Build output: $BUILD_LOG"
-/usr/bin/time -p -o "$LOG_DIR/mac_fast_api_build_time.log" python -m build > "$BUILD_LOG" 2>&1
+/usr/bin/time -p -o "$LOG_DIR/mac_fast_api_build_time.log" "$VENV_PYTHON" -m build > "$BUILD_LOG" 2>&1
 check_status "Building Fast API"
 
 # Parse build phase timing
-parse_time_output "$LOG_DIR/mac_fast_api_build_time.log" "build"
+build_times=$(parse_time_output "$LOG_DIR/mac_fast_api_build_time.log") || {
+    log " ERROR - Could not parse build timing"
+    exit 1
+}
+read -r build_real build_user build_sys build_cputime << EOF
+$build_times
+EOF
+log "✓ Parsed build phase: real=${build_real}s, user=${build_user}s, sys=${build_sys}s, cputime=${build_cputime}s"
 
 log "-- fast_api build ended"
 
@@ -181,11 +186,19 @@ log "-- fast_api tests started"
 
 TEST_LOG="$LOG_DIR/mac_fast_api_test.log"
 log "-- Test output: $TEST_LOG"
-/usr/bin/time -p -o "$LOG_DIR/mac_fast_api_test_time.log" bash scripts/test.sh > "$TEST_LOG" 2>&1
+export PYTHONPATH="./docs_src"
+/usr/bin/time -p -o "$LOG_DIR/mac_fast_api_test_time.log" "$VENV_PYTHON" -m coverage run -m pytest tests > "$TEST_LOG" 2>&1
 check_status "Running Fast API tests"
 
 # Parse test phase timing
-parse_time_output "$LOG_DIR/mac_fast_api_test_time.log" "test"
+test_times=$(parse_time_output "$LOG_DIR/mac_fast_api_test_time.log") || {
+    log " ERROR - Could not parse test timing"
+    exit 1
+}
+read -r test_real test_user test_sys test_cputime << EOF
+$test_times
+EOF
+log "✓ Parsed test phase: real=${test_real}s, user=${test_user}s, sys=${test_sys}s, cputime=${test_cputime}s"
 
 log "-- fast_api tests completed"
 
@@ -207,6 +220,8 @@ log "========================================"
 # Write metrics CSV file (key,value format)
 cat > "$METRICS_FILE" << EOF
 scenario_runtime,$scenario_runtime
+build_time,$build_real
+test_time,$test_real
 build_real,$build_real
 build_user,$build_user
 build_sys,$build_sys

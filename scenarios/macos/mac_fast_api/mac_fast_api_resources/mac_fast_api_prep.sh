@@ -2,12 +2,15 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Set BIN_DIR to /Users/Shared/hobl_bin
-BIN_DIR="/Users/Shared/hobl_bin"
-export SUDO_ASKPASS=$BIN_DIR/get_password.sh
-LOG_DIR="/Users/Shared/hobl_data"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)" || exit 1
+BIN_DIR="$(dirname "$SCRIPT_DIR")"
+export SUDO_ASKPASS="$BIN_DIR/get_password.sh"
+LOG_DIR="${HOBL_LOG_DIR:-/Users/Shared/hobl_data}"
 LOG_FILE="$LOG_DIR/mac_fast_api_prep.log"
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" || {
+    echo " ERROR - Cannot create log directory: $LOG_DIR"
+    exit 1
+}
 
 log() {
     echo "$1"
@@ -73,7 +76,7 @@ else
     fi
 fi
 
-cd $BIN_DIR || {
+cd "$BIN_DIR" || {
     log " ERROR - Failed to change to $BIN_DIR"
     exit 1
 }
@@ -82,12 +85,12 @@ cd $BIN_DIR || {
 log "-- Cloning repo"
 if [ -d "$BIN_DIR/fastapi" ]; then
     log "✓ FastAPI repo already exists"
-    cd $BIN_DIR/fastapi
+    cd "$BIN_DIR/fastapi"
     git pull origin main 2>/dev/null || true
 else
     git clone https://github.com/fastapi/fastapi.git
     check_status "Git clone"
-    cd $BIN_DIR/fastapi
+    cd "$BIN_DIR/fastapi"
 fi
 
 log "-- Checkout version 0.119.1"
@@ -170,15 +173,16 @@ source ~/.zprofile
 check_command "pyenv" || exit 1
 
 log "-- Installing Python 3.12.10"
-pyenv install 3.12.10 -f
+pyenv install -s 3.12.10
 check_status "Python 3.12.10 installation"
 
-log "-- Setting Python version"
-pyenv global 3.12.10
-check_status "Setting Python global version"
+export PYENV_VERSION="3.12.10"
+PYENV_PYTHON="$(pyenv which python)"
+check_status "Resolving Python 3.12.10"
+check_command "$PYENV_PYTHON" || exit 1
 
 # Verify Python version
-PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}')
+PYTHON_VERSION=$("$PYENV_PYTHON" --version 2>&1 | awk '{print $2}')
 if [ "$PYTHON_VERSION" != "3.12.10" ]; then
     log " ERROR - Python version is $PYTHON_VERSION, expected 3.12.10"
     pyenv versions
@@ -186,8 +190,18 @@ if [ "$PYTHON_VERSION" != "3.12.10" ]; then
 fi
 log "✓ Python version confirmed: $PYTHON_VERSION"
 
+VENV_DIR="$SCRIPT_DIR/.venv"
+if [ -L "$VENV_DIR" ]; then
+    log " ERROR - Refusing to clear a linked scenario venv: $VENV_DIR"
+    exit 1
+fi
+"$PYENV_PYTHON" -m venv --clear "$VENV_DIR"
+check_status "Creating the scenario venv"
+VENV_PYTHON="$VENV_DIR/bin/python"
+VENV_PIP="$VENV_DIR/bin/pip"
+
 log "-- Installing dependencies for FastAPI"
-cd $BIN_DIR/fastapi || {
+cd "$BIN_DIR/fastapi" || {
     log " ERROR - Failed to change to fastapi directory"
     exit 1
 }
@@ -205,11 +219,14 @@ log "✓ requirements.txt found"
 PYPI_INDEX_URL="https://packagefeedproxy.microsoft.io/pypi/simple"
 log "-- Using approved PyPI feed proxy: $PYPI_INDEX_URL"
 
-pip install --index-url "$PYPI_INDEX_URL" -r requirements.txt
+# Legacy Starlette uses the BlockingPortal alias deprecated by newer AnyIO.
+"$VENV_PIP" install --index-url "$PYPI_INDEX_URL" -r requirements.txt "anyio==4.14.2"
 check_status "FastAPI requirements installation"
 
-pip install --index-url "$PYPI_INDEX_URL" build
+"$VENV_PIP" install --index-url "$PYPI_INDEX_URL" build
 check_status "Build package installation"
+"$VENV_PIP" check
+check_status "Checking scenario dependencies"
 
 # Final verification
 log ""
@@ -218,11 +235,11 @@ check_command "git" || exit 1
 check_command "brew" || exit 1
 check_command "npm" || exit 1
 check_command "pyenv" || exit 1
-check_command "python" || exit 1
-check_command "pip" || exit 1
+check_command "$VENV_PYTHON" || exit 1
+check_command "$VENV_PIP" || exit 1
 
 # Verify FastAPI can be imported
-python -c "import fastapi" 2>/dev/null
+"$VENV_PYTHON" -W error::DeprecationWarning -c "import build, coverage, pytest, fastapi; from fastapi.testclient import TestClient; print('FastAPI', fastapi.__version__, '| build', build.__version__, '| coverage', coverage.__version__, '| pytest', pytest.__version__)"
 if [ $? -eq 0 ]; then
     log "✓ FastAPI module can be imported"
 else
