@@ -218,14 +218,17 @@ log "✓ requirements.txt found"
 # Same pinned versions are served, so there is no functional or performance change.
 PYPI_INDEX_URL="https://packagefeedproxy.microsoft.io/pypi/simple"
 log "-- Using approved PyPI feed proxy: $PYPI_INDEX_URL"
+PIP_LOG="$LOG_DIR/mac_fast_api_pip_install.log"
+log "-- Detailed pip log: $PIP_LOG"
 
 # Legacy Starlette uses the BlockingPortal alias deprecated by newer AnyIO.
-"$VENV_PIP" install --index-url "$PYPI_INDEX_URL" -r requirements.txt "anyio==4.14.2"
-check_status "FastAPI requirements installation"
+# Match the validated full requirements, including the documentation's Typer pin.
+"$VENV_PIP" install --index-url "$PYPI_INDEX_URL" -r requirements.txt "click==8.2.1" "anyio==4.14.2" "fastapi-cloud-cli==0.1.1" --log "$PIP_LOG"
+check_status "FastAPI requirements installation (see $PIP_LOG)"
 
-"$VENV_PIP" install --index-url "$PYPI_INDEX_URL" build
+"$VENV_PIP" install --index-url "$PYPI_INDEX_URL" build --log "$PIP_LOG"
 check_status "Build package installation"
-"$VENV_PIP" check
+"$VENV_PIP" --log "$PIP_LOG" check
 check_status "Checking scenario dependencies"
 
 # Final verification

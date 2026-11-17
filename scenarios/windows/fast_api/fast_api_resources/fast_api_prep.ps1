@@ -901,13 +901,22 @@ if (-not (Test-Path $venvPython)) {
 $pypiIndexUrl = "https://packagefeedproxy.microsoft.io/pypi/simple"
 "Using approved PyPI feed proxy: $pypiIndexUrl" | log
 
+$pipLog = Join-Path (Split-Path -Path $logFile -Parent) "fast_api_pip_install_$($logSuffix.ToLower()).log"
+"Detailed pip log: $pipLog" | log
 "Installing requirements.txt into venv..." | log
 # Legacy Starlette uses the BlockingPortal alias deprecated by newer AnyIO.
-& $venvPip install --index-url $pypiIndexUrl -r requirements.txt "click==8.2.1" "anyio==4.14.2"
-check($lastexitcode)
+# The legacy documentation pins Typer 0.16.0, so keep its compatible Cloud CLI.
+& $venvPip install --index-url $pypiIndexUrl -r requirements.txt "click==8.2.1" "anyio==4.14.2" "fastapi-cloud-cli==0.1.1" --log $pipLog
+$requirementsExitCode = $LASTEXITCODE
+if ($requirementsExitCode -ne 0) {
+    " ERROR - FastAPI requirements installation failed with exit code $requirementsExitCode. See $pipLog" | log
+}
+check($requirementsExitCode)
 
 "Installing build tool into venv..." | log
-& $venvPip install --index-url $pypiIndexUrl build
+& $venvPip install --index-url $pypiIndexUrl build --log $pipLog
+check($lastexitcode)
+& $venvPip --log $pipLog check
 check($lastexitcode)
 
 "-- FastAPI prep completed ($logSuffix version)" | log
