@@ -902,7 +902,8 @@ $pypiIndexUrl = "https://packagefeedproxy.microsoft.io/pypi/simple"
 "Using approved PyPI feed proxy: $pypiIndexUrl" | log
 
 "Installing requirements.txt into venv..." | log
-& $venvPip install --index-url $pypiIndexUrl -r requirements.txt "click==8.2.1"
+# Legacy Starlette uses the BlockingPortal alias deprecated by newer AnyIO.
+& $venvPip install --index-url $pypiIndexUrl -r requirements.txt "click==8.2.1" "anyio==4.14.2"
 check($lastexitcode)
 
 "Installing build tool into venv..." | log
