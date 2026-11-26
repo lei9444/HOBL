@@ -44,3 +44,27 @@ python -m pytest -n auto --dist loadgroup --cov --cov-context=test tests scripts
   the default `0` keeps tests serial. On macOS, use `mac_fast_api:workers`.
   Example: `hobl.cmd -s fast_api fast_api:loops=1 fast_api:workers=auto`.
 - For serial runs, use `pytest -n 0 --dist no` with the same coverage options and test paths.
+
+## Windows lab: pytest-cov report reuse
+
+On this experimental branch, `fast_api:cov_variant=reuse` (default) tests a
+pytest-cov 7.1.0 patch that reuses the total returned by the terminal coverage
+report. `fast_api:cov_variant=stock` is the control. Both use a temporary copy of
+the pinned package; neither modifies the prepared venv. The `uv build`, pytest
+arguments, per-test coverage and `test_time` measurement are unchanged.
+
+Example for a previously prepared N1X using 20 workers (replace the profile path):
+
+```powershell
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=stock
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=reuse
+```
+
+Keep the DUT, drive, power mode, worker count and starting checkout/cache state
+the same. Warm each variant once, then alternate stock/reuse and reuse/stock.
+Compare **`fast_api_results.csv` → `test_time`**, not `scenario_runtime` or
+`build_time`. The DUT also records one line per loop in `fast_api_cov_trials.jsonl`
+with the actual controller's variant, engine SHA-256, pytest exit code and
+`test_time`. Only compare successful runs with matching test outcomes and
+coverage. To return to the baseline, use `stock` or switch back to the lab base
+branch. No re-prep is needed for an already valid 0.162.5 environment.

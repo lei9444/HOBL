@@ -4,7 +4,9 @@
 param(
     [string]$logFile = "",
     [string]$startTime = (Get-Date).ToString("o"),
-    [string]$Workers = "0"
+    [string]$Workers = "0",
+    [ValidateSet("stock", "reuse")]
+    [string]$CovVariant = "reuse"
 )
 # Require PowerShell > 7
 $required = [version]"7.0"
@@ -367,19 +369,49 @@ $buildTime = [math]::Round($buildTime, 2)
 $env:PYTHONPATH = "./docs_src"
 $env:PYTHONIOENCODING = "utf-8"
 
-"Running tests with coverage..." | log
-Write-RunPhaseMarker "phase.run_test.start"
 $testLog = "$LOG_DIR\fast_api_test.log"
-"Test output: $testLog" | log
 # pytest-cov needs --dist no to record per-test contexts when there are no workers.
 $distribution = if ($Workers -match '^0+$') { "no" } else { "loadgroup" }
-$testTime = (Measure-Command {
-    & $venvPython -m pytest -n $Workers --dist $distribution --cov --cov-context=test --cov-report=term tests "scripts\tests" *> $testLog
-}).TotalSeconds
-$testExitCode = $LASTEXITCODE
-Write-RunPhaseMarker "phase.run_test.end"
-Write-RunPhaseMarker "phase.run_results.start"
-$testTime = [math]::Round($testTime, 2)
+$labRoot = Join-Path $PSScriptRoot ("cov-lab-" + [guid]::NewGuid().ToString("N"))
+$overlay = Join-Path $labRoot $CovVariant.ToLowerInvariant()
+$savedPlugins = $env:PYTEST_PLUGINS
+$savedPythonPath = $env:PYTHONPATH
+New-Item -ItemType Directory -Path $labRoot -ErrorAction Stop | Out-Null
+try {
+    & $venvPython -I -B (Join-Path $PSScriptRoot "hobl_cov_lab.py") $overlay 2>&1 | log
+    if ($LASTEXITCODE -ne 0) {
+        " ERROR - Could not prepare pytest-cov '$CovVariant'; refusing to record a timing." | log
+        Exit 1
+    }
+    $env:PYTHONPATH = "$overlay$([IO.Path]::PathSeparator)$savedPythonPath"
+    $env:PYTEST_PLUGINS = if ($savedPlugins) { "$savedPlugins,hobl_cov_lab" } else { "hobl_cov_lab" }
+    "Running tests with coverage ($CovVariant); test output: $testLog" | log
+    Write-RunPhaseMarker "phase.run_test.start"
+    $testTime = (Measure-Command {
+        & $venvPython -m pytest -n $Workers --dist $distribution --cov --cov-context=test --cov-report=term tests "scripts\tests" *> $testLog
+    }).TotalSeconds
+    $testExitCode = $LASTEXITCODE
+    Write-RunPhaseMarker "phase.run_test.end"
+    Write-RunPhaseMarker "phase.run_results.start"
+    $testTime = [math]::Round($testTime, 2)
+
+    $receipt = Join-Path $overlay "loaded.json"
+    if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
+        " ERROR - The pytest controller did not confirm the requested pytest-cov variant. See $testLog." | log
+        Exit 1
+    }
+    $trial = Get-Content -LiteralPath $receipt -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    $trial["workers_requested"] = $Workers
+    $trial["pytest_exit_code"] = $testExitCode
+    $trial["test_time"] = $testTime
+    $trialJson = $trial | ConvertTo-Json -Compress
+    "pytest-cov lab: $trialJson" | log
+    Add-Content -LiteralPath (Join-Path $LOG_DIR "fast_api_cov_trials.jsonl") -Value $trialJson -Encoding utf8 -ErrorAction Stop
+} finally {
+    $env:PYTEST_PLUGINS = $savedPlugins
+    $env:PYTHONPATH = $savedPythonPath
+    Remove-Item -LiteralPath $labRoot -Recurse -Force -ErrorAction Stop
+}
 
 if ($testExitCode -eq 0) {
     "FastAPI tests completed successfully!" | log
