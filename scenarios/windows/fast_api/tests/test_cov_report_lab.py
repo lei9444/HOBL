@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -13,6 +14,54 @@ from scenarios.windows.fast_api.fast_api_resources import hobl_cov_lab
 
 
 class CovReportLabTests(unittest.TestCase):
+    def test_report_times_include_only_nested_line_reads_and_preserve_the_summary(self):
+        class Data:
+            def lines(self, filename):
+                return [len(filename)]
+
+        data = Data()
+        original = Data.lines
+
+        def summary(stream):
+            for filename in ("a", "abc"):
+                stream.extend(data.lines(filename))
+            return 98.5
+
+        controller = SimpleNamespace(summary=summary, cov=SimpleNamespace(config=SimpleNamespace(branch=False)))
+        receipt = {"variant": "stock"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "loaded.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            run = hobl_cov_lab.timed_report(controller, Data, receipt, path)
+            ticks = [0, 100_000_000, 200_000_000, 300_000_000, 500_000_000, 900_000_000]
+            with patch.object(hobl_cov_lab, "perf_counter_ns", side_effect=ticks):
+                self.assertEqual(data.lines("outside"), [7])
+                stream = []
+                self.assertEqual(run(stream), 98.5)
+                self.assertEqual(stream, [1, 3])
+                self.assertEqual(data.lines("after"), [5])
+            self.assertIs(Data.lines, original)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
+                "variant": "stock", "coverage_report_time_s": 0.9, "coverage_bitmap_read_time_s": 0.3,
+            })
+
+    def test_incomplete_report_restores_reader_and_leaves_the_identity_receipt(self):
+        class Data:
+            def lines(self, filename):
+                raise ValueError("unreadable bitmap")
+
+        original = Data.lines
+        controller = SimpleNamespace(summary=lambda stream: Data().lines("a"),
+                                     cov=SimpleNamespace(config=SimpleNamespace(branch=False)))
+        receipt = {"variant": "combined"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "loaded.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unreadable bitmap"):
+                hobl_cov_lab.timed_report(controller, Data, receipt, path)(None)
+            self.assertIs(Data.lines, original)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), receipt)
+
     def test_cached_prep_refreshes_all_lab_inputs_without_uploading_the_venv(self):
         scenario = object.__new__(fast_api.FastApi)
         scenario.dut_exec_path = str(Path(__file__).parent / "hobl_bin")

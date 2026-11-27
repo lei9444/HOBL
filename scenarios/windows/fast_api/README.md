@@ -76,8 +76,19 @@ the same. For warm measurements, warm each compared variant once (exclude those
 runs), then run four pairs in order AB, BA, BA, AB. Use the official
 `fast_api_results.csv`: `scenario_runtime` is **Build + Test**, `test_time`
 is **Test**, and `build_time` is a control (the build is unchanged).
-`fast_api_cov_trials.jsonl` retains each loop's three timings, both loaded
+`fast_api_cov_trials.jsonl` retains each loop's timings, both loaded
 implementations and their file hashes, requested workers and pytest exit code;
 the ordinary CSV is overwritten by the next loop. Compare only successful runs
 with matching test outcomes and coverage. Rerun the control on this branch
 rather than adding savings measured on earlier revisions or other DUTs.
+
+Every successful loop also writes two nested wall-clock timings (seconds) to
+the JSONL, CSV and run log:
+
+| Metric | What it measures |
+|---|---|
+| `coverage_report_time_s` | The pytest-cov controller's complete `summary()` call after data collection and combination. Includes both the total-only and terminal passes for `stock`, or the single reused pass for `reuse` and `combined`. |
+| `coverage_bitmap_read_time_s` | Time spent inside `CoverageData.lines()` during that report, including file lookup, SQLite reads and decoding or union of the per-context line bitmaps. Excludes workers and reads outside reporting. |
+
+The bitmap time is **part of** the report time, which is already part of `test_time`.
+Neither is time saved; do not add them together or to `scenario_runtime`.

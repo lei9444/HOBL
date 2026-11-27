@@ -402,6 +402,13 @@ try {
         Exit 1
     }
     $trial = Get-Content -LiteralPath $receipt -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    $reportTime = $trial["coverage_report_time_s"]
+    $bitmapReadTime = $trial["coverage_bitmap_read_time_s"]
+    if ($testExitCode -eq 0 -and ($null -eq $reportTime -or $null -eq $bitmapReadTime -or
+            $bitmapReadTime -le 0 -or $bitmapReadTime -gt $reportTime)) {
+        " ERROR - Missing or invalid coverage report timings; refusing to record a successful trial. See $testLog." | log
+        Exit 1
+    }
     $trial["workers_requested"] = $Workers
     $trial["pytest_exit_code"] = $testExitCode
     $trial["build_time"] = $buildTime
@@ -433,15 +440,22 @@ if ($testExitCode -eq 0) {
 "========================================" | log
 "Build Time:  ${buildTime}s" | log
 "Test Time:   ${testTime}s" | log
+if ($null -ne $reportTime) {
+    ("Coverage report: {0:F3}s (including {1:F3}s reading line bitmaps)" -f $reportTime, $bitmapReadTime) | log
+}
 "scenario_runtime (total): ${scenarioRuntime}s" | log
 "========================================" | log
 
 # Write metrics CSV file (key,value format)
-$metricsContent = @"
-scenario_runtime,$scenarioRuntime
-build_time,$buildTime
-test_time,$testTime
-"@
+$metricsContent = @(
+    "scenario_runtime,$scenarioRuntime"
+    "build_time,$buildTime"
+    "test_time,$testTime"
+    if ($null -ne $reportTime) {
+        "coverage_report_time_s,$reportTime"
+        "coverage_bitmap_read_time_s,$bitmapReadTime"
+    }
+) -join [Environment]::NewLine
 
 Set-Content -Path $METRICS_FILE -Value $metricsContent -NoNewline
 "Metrics saved to: $METRICS_FILE" | log

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from importlib.metadata import distribution
+from time import perf_counter_ns
 
 
 ENGINE_SHA256 = {
@@ -78,6 +79,43 @@ def prepare(overlay):
     print(f"Prepared {overlay.name} in {overlay} from {pytest_cov} and {coverage}")
 
 
+def timed_report(controller, data_class, receipt, path):
+    summary = controller.summary
+
+    def measure(stream):
+        if controller.cov.config.branch:
+            raise RuntimeError("FastAPI lab bitmap timing requires line coverage, not branch coverage")
+        lines = data_class.lines
+        bitmap_ns = 0
+
+        def timed_lines(data, filename):
+            nonlocal bitmap_ns
+            start = perf_counter_ns()
+            try:
+                return lines(data, filename)
+            finally:
+                bitmap_ns += perf_counter_ns() - start
+
+        # Bracket reads only during the controller's report, never collection or worker execution.
+        data_class.lines = timed_lines
+        try:
+            start = perf_counter_ns()
+            total = summary(stream)
+            report_ns = perf_counter_ns() - start
+        finally:
+            data_class.lines = lines
+
+        measured = dict(receipt, coverage_report_time_s=report_ns / 1e9,
+                        coverage_bitmap_read_time_s=bitmap_ns / 1e9)
+        # Keep the original identity receipt intact if reporting is interrupted.
+        pending = path.with_suffix(".tmp")
+        pending.write_text(json.dumps(measured), encoding="utf-8")
+        pending.replace(path)
+        return total
+
+    return measure
+
+
 def pytest_sessionstart(session):
     """One receipt from the actual coverage controller, not a separate preflight import."""
     if hasattr(session.config, "workerinput") or os.environ.get("PYTEST_CURRENT_TEST"):
@@ -92,7 +130,8 @@ def pytest_sessionstart(session):
     engine = Path(module.__file__).resolve(strict=True)
     if engine != overlay / "pytest_cov" / "engine.py":
         raise RuntimeError(f"pytest loaded {engine}, not the requested lab copy in {overlay}")
-    sqldata = Path(sys.modules["coverage.sqldata"].__file__).resolve(strict=True)
+    data_module = sys.modules["coverage.sqldata"]
+    sqldata = Path(data_module.__file__).resolve(strict=True)
     if sqldata != overlay / "coverage" / "sqldata.py":
         raise RuntimeError(f"pytest loaded {sqldata}, not the requested lab copy in {overlay}")
     report, reader = VARIANTS[overlay.name]
@@ -100,8 +139,11 @@ def pytest_sessionstart(session):
                    engine_sha256=check_source(engine, ENGINE_SHA256[report]), engine_path=str(engine),
                    coverage_py="7.17.2", reader_variant=reader,
                    sqldata_sha256=check_source(sqldata, SQLDATA_SHA256[reader]), sqldata_path=str(sqldata))
-    with (overlay / "loaded.json").open("x", encoding="utf-8") as stream:
+    path = overlay / "loaded.json"
+    with path.open("x", encoding="utf-8") as stream:
         json.dump(receipt, stream)
+    controller = plugin.cov_controller
+    controller.summary = timed_report(controller, data_module.CoverageData, receipt, path)
 
 
 if __name__ == "__main__":
