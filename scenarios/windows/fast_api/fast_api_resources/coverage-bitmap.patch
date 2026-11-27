@@ -1,0 +1,32 @@
+Experimental delta against coverage.py 7.17.2 (https://github.com/coveragepy/coveragepy).
+Upstream source: Copyright 2001 Gareth Rees; Copyright 2004-2026 Ned Batchelder.
+Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+Upstream notices: https://github.com/coveragepy/coveragepy/blob/7.17.2/NOTICE.txt
+
+--- a/coverage/sqldata.py
++++ b/coverage/sqldata.py
+@@ -32,6 +32,7 @@
+ from coverage.exceptions import ConfigError, CoverageException, DataError
+ from coverage.misc import Hasher, file_be_gone, isolate_module
+ from coverage.numbits import (
++    NumbitsUnionAgg,
+     numbits_to_nums,
+     numbits_union,
+     nums_to_numbits,
+@@ -1123,12 +1124,11 @@
+                     ids_array = ", ".join("?" * len(self._query_context_ids))
+                     query += " AND context_id IN (" + ids_array + ")"
+                     data += self._query_context_ids
++                combined = NumbitsUnionAgg()
+                 with con.execute(query, data) as cur:
+-                    bitmaps = list(cur)
+-                nums = set()
+-                for row in bitmaps:
+-                    nums.update(numbits_to_nums(row[0]))
+-                return list(nums)
++                    for (bitmap,) in cur:
++                        combined.step(bitmap)
++                return numbits_to_nums(combined.finalize())
+ 
+     def arcs(self, filename: str) -> list[TArc] | None:
+         """Get the list of arcs executed for a file.

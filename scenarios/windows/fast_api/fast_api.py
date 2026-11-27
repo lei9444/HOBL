@@ -22,7 +22,7 @@ class FastApi(core.app_scenario.Scenario):
     # Set default parameters
     Params.setDefault(module, 'loops', '5')
     Params.setDefault(module, 'workers', '0')
-    Params.setDefault(module, 'cov_variant', 'reuse', desc="Lab pytest-cov report implementation.", valOptions=['stock', 'reuse'])
+    Params.setDefault(module, 'cov_variant', 'combined', desc="Lab coverage report implementation.", valOptions=['stock', 'reuse', 'combined'])
 
 
     def setUp(self):
@@ -33,8 +33,8 @@ class FastApi(core.app_scenario.Scenario):
         if not re.fullmatch(r'auto|[0-9]+', self.workers):
             raise ValueError(f"{self.module}:workers must be 'auto' or a non-negative integer.")
         self.cov_variant = Params.get(self.module, 'cov_variant')
-        if self.cov_variant not in ('stock', 'reuse'):
-            raise ValueError(f"{self.module}:cov_variant must be 'stock' or 'reuse'.")
+        if self.cov_variant not in ('stock', 'reuse', 'combined'):
+            raise ValueError(f"{self.module}:cov_variant must be 'stock', 'reuse', or 'combined'.")
 
         self.target = f"{self.dut_exec_path}\\{self.resources}"
 
@@ -55,7 +55,7 @@ class FastApi(core.app_scenario.Scenario):
             self.createPrepStatusControlFile(self.prep_version)
         else:
             # Upload individual files: refreshing the entire directory would remove the prepared .venv.
-            for filename in (f"{self.module}_run.ps1", "hobl_cov_lab.py", "report-reuse.patch"):
+            for filename in (f"{self.module}_run.ps1", "hobl_cov_lab.py", "report-reuse.patch", "coverage-bitmap.patch"):
                 source = os.path.join("scenarios", "windows", self.module, self.resources, filename)
                 self._upload(source, self.target, check_modified=False)
 
@@ -66,7 +66,7 @@ class FastApi(core.app_scenario.Scenario):
     def runTest(self):
         start_time = datetime.now().astimezone().isoformat()
         for i in range(int(self.loops)):
-            logging.info(f"Running loop {i + 1} (pytest-cov: {self.cov_variant})")
+            logging.info(f"Running loop {i + 1} (coverage lab: {self.cov_variant})")
             self._call(["pwsh", f"{self.target}\\{self.module}_run.ps1 -startTime {start_time} -Workers {self.workers} -CovVariant {self.cov_variant}"], timeout = 3600)
 
 

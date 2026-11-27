@@ -2,3 +2,4 @@
 setup/dut_setup.sh binary
 # Blank context lines in a unified diff consist of a single space.
 scenarios/windows/fast_api/fast_api_resources/report-reuse.patch text eol=lf whitespace=-blank-at-eol
+scenarios/windows/fast_api/fast_api_resources/coverage-bitmap.patch text eol=lf whitespace=-blank-at-eol

@@ -5,8 +5,8 @@ param(
     [string]$logFile = "",
     [string]$startTime = (Get-Date).ToString("o"),
     [string]$Workers = "0",
-    [ValidateSet("stock", "reuse")]
-    [string]$CovVariant = "reuse"
+    [ValidateSet("stock", "reuse", "combined")]
+    [string]$CovVariant = "combined"
 )
 # Require PowerShell > 7
 $required = [version]"7.0"
@@ -380,7 +380,7 @@ New-Item -ItemType Directory -Path $labRoot -ErrorAction Stop | Out-Null
 try {
     & $venvPython -I -B (Join-Path $PSScriptRoot "hobl_cov_lab.py") $overlay 2>&1 | log
     if ($LASTEXITCODE -ne 0) {
-        " ERROR - Could not prepare pytest-cov '$CovVariant'; refusing to record a timing." | log
+        " ERROR - Could not prepare coverage lab variant '$CovVariant'; refusing to record a timing." | log
         Exit 1
     }
     $env:PYTHONPATH = "$overlay$([IO.Path]::PathSeparator)$savedPythonPath"
@@ -394,18 +394,21 @@ try {
     Write-RunPhaseMarker "phase.run_test.end"
     Write-RunPhaseMarker "phase.run_results.start"
     $testTime = [math]::Round($testTime, 2)
+    $scenarioRuntime = [math]::Round($buildTime + $testTime, 2)
 
     $receipt = Join-Path $overlay "loaded.json"
     if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
-        " ERROR - The pytest controller did not confirm the requested pytest-cov variant. See $testLog." | log
+        " ERROR - The pytest controller did not confirm the requested coverage lab variant. See $testLog." | log
         Exit 1
     }
     $trial = Get-Content -LiteralPath $receipt -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
     $trial["workers_requested"] = $Workers
     $trial["pytest_exit_code"] = $testExitCode
+    $trial["build_time"] = $buildTime
     $trial["test_time"] = $testTime
+    $trial["scenario_runtime"] = $scenarioRuntime
     $trialJson = $trial | ConvertTo-Json -Compress
-    "pytest-cov lab: $trialJson" | log
+    "Coverage lab: $trialJson" | log
     Add-Content -LiteralPath (Join-Path $LOG_DIR "fast_api_cov_trials.jsonl") -Value $trialJson -Encoding utf8 -ErrorAction Stop
 } finally {
     $env:PYTEST_PLUGINS = $savedPlugins
@@ -421,9 +424,8 @@ if ($testExitCode -eq 0) {
 "Tests completed in ${testTime}s" | log
 
 # ============================================================================
-# Calculate scenario_runtime and save metrics
+# Save metrics
 # ============================================================================
-$scenarioRuntime = [math]::Round($buildTime + $testTime, 2)
 
 "" | log
 "========================================" | log
