@@ -23,6 +23,7 @@ class FastApi(core.app_scenario.Scenario):
     Params.setDefault(module, 'loops', '5')
     Params.setDefault(module, 'workers', '0')
     Params.setDefault(module, 'cov_variant', 'combined', desc="Lab coverage report implementation.", valOptions=['stock', 'reuse', 'combined'])
+    Params.setDefault(module, 'realpath_variant', 'off', desc="Windows CPython realpath lab experiment.", valOptions=['off', 'stock', 'exact'])
 
 
     def setUp(self):
@@ -35,6 +36,9 @@ class FastApi(core.app_scenario.Scenario):
         self.cov_variant = Params.get(self.module, 'cov_variant')
         if self.cov_variant not in ('stock', 'reuse', 'combined'):
             raise ValueError(f"{self.module}:cov_variant must be 'stock', 'reuse', or 'combined'.")
+        self.realpath_variant = Params.get(self.module, 'realpath_variant')
+        if self.realpath_variant not in ('off', 'stock', 'exact'):
+            raise ValueError(f"{self.module}:realpath_variant must be 'off', 'stock', or 'exact'.")
 
         self.target = f"{self.dut_exec_path}\\{self.resources}"
 
@@ -55,7 +59,10 @@ class FastApi(core.app_scenario.Scenario):
             self.createPrepStatusControlFile(self.prep_version)
         else:
             # Upload individual files: refreshing the entire directory would remove the prepared .venv.
-            for filename in (f"{self.module}_run.ps1", "hobl_cov_lab.py", "report-reuse.patch", "coverage-bitmap.patch"):
+            filenames = [f"{self.module}_run.ps1", "hobl_cov_lab.py", "report-reuse.patch", "coverage-bitmap.patch"]
+            if self.realpath_variant != 'off':
+                filenames.extend(["hobl_realpath_lab.py", "ntpath-realpath.patch"])
+            for filename in filenames:
                 source = os.path.join("scenarios", "windows", self.module, self.resources, filename)
                 self._upload(source, self.target, check_modified=False)
 
@@ -66,8 +73,8 @@ class FastApi(core.app_scenario.Scenario):
     def runTest(self):
         start_time = datetime.now().astimezone().isoformat()
         for i in range(int(self.loops)):
-            logging.info(f"Running loop {i + 1} (coverage lab: {self.cov_variant})")
-            self._call(["pwsh", f"{self.target}\\{self.module}_run.ps1 -startTime {start_time} -Workers {self.workers} -CovVariant {self.cov_variant}"], timeout = 3600)
+            logging.info(f"Running loop {i + 1} (coverage: {self.cov_variant}, realpath: {self.realpath_variant})")
+            self._call(["pwsh", f"{self.target}\\{self.module}_run.ps1 -startTime {start_time} -Workers {self.workers} -CovVariant {self.cov_variant} -RealpathVariant {self.realpath_variant}"], timeout = 3600)
 
 
     def tearDown(self):

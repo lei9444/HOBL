@@ -92,3 +92,38 @@ the JSONL, CSV and run log:
 
 The bitmap time is **part of** the report time, which is already part of `test_time`.
 Neither is time saved; do not add them together or to `scenario_runtime`.
+
+## Windows lab: CPython `realpath` A/B
+
+`fast_api:realpath_variant=off` (default) does not install a realpath hook.
+For an A/B use **`stock` vs. `exact`**, not `off` vs. `exact`. Both arms load
+the same probe at import of the temporary coverage package. `stock` loads
+the original frozen CPython 3.12.10 function; `exact` uses the result of the
+first successful Windows final-path lookup only when its input exactly matches
+the proposed prefix-stripped spelling. All other lookups keep the original
+verification. This is a Test-only prototype, not a deployed CPython build:
+it does not affect the earlier `uv build` or interpreter startup before the
+coverage import. Neither arm edits shared pyenv files or the scenario venv.
+No new prep is needed on a valid prep-11 DUT.
+
+On the same prepared N1X, keep the same drive, power mode, FastAPI checkout,
+coverage variant and worker count in both profiles:
+
+```powershell
+# A: control
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=combined fast_api:realpath_variant=stock
+# B: candidate (only realpath changes)
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=combined fast_api:realpath_variant=exact
+```
+
+Exclude one warmup for each arm, then run `AB, BA, BA, AB` on the same DUT.
+Use **`test_time`** as the primary wall-clock metric, not the nested coverage
+report/bitmap timers. Report `scenario_runtime` as Build + Test and keep
+`build_time` as a control. Compare per-loop JSONL rows, not just the overwritten
+last-loop CSV. Keep `fast_api_cov_trials.jsonl`, `fast_api_test.log` and
+`fast_api_results.csv` with each run. A successful opt-in row must include
+the actual `realpath_variant`, `realpath_code_sha256` (SHA-256 of the full
+serialized function code), `realpath_workers` (20 in this example) and
+`realpath_telemetry_children` (43). The controller, workers and exact set of
+isolated telemetry calls must attest the requested code or the run fails.
+There is no per-path timer in either arm.

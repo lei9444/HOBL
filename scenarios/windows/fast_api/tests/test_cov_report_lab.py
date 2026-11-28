@@ -68,20 +68,23 @@ class CovReportLabTests(unittest.TestCase):
         scenario.checkPrepStatus = Mock(return_value=False)
         scenario._upload = Mock()
         scenario._call = Mock()
-        params = {"platform": "Windows", "loops": "1", "workers": "20", "cov_variant": "combined"}
-        with patch.object(fast_api.Params, "get", side_effect=lambda section, key: params[key]), \
-                patch.object(fast_api.core.app_scenario.Scenario, "setUp"):
-            scenario.setUp()
-            scenario.runTest()
-        uploaded = []
-        for call in scenario._upload.call_args_list:
-            source, target = call.args
-            self.assertEqual(target, scenario.target)
-            self.assertFalse(call.kwargs["check_modified"])
-            self.assertTrue((Path(__file__).resolve().parents[1] / "fast_api_resources" / Path(source).name).is_file())
-            uploaded.append(Path(source).name)
-        self.assertCountEqual(uploaded, ["fast_api_run.ps1", "hobl_cov_lab.py", "report-reuse.patch", "coverage-bitmap.patch"])
-        self.assertTrue(scenario._call.call_args.args[0][1].endswith("-Workers 20 -CovVariant combined"))
+        base = ["fast_api_run.ps1", "hobl_cov_lab.py", "report-reuse.patch", "coverage-bitmap.patch"]
+        for variant in ("off", "stock", "exact"):
+            scenario._upload.reset_mock()
+            params = {"platform": "Windows", "loops": "1", "workers": "20", "cov_variant": "combined", "realpath_variant": variant}
+            with self.subTest(realpath=variant), patch.object(fast_api.Params, "get", side_effect=lambda section, key: params[key]), \
+                    patch.object(fast_api.core.app_scenario.Scenario, "setUp"):
+                scenario.setUp()
+                scenario.runTest()
+                uploaded = []
+                for call in scenario._upload.call_args_list:
+                    source, target = call.args
+                    self.assertEqual(target, scenario.target)
+                    self.assertFalse(call.kwargs["check_modified"])
+                    self.assertTrue((Path(__file__).resolve().parents[1] / "fast_api_resources" / Path(source).name).is_file())
+                    uploaded.append(Path(source).name)
+                self.assertCountEqual(uploaded, base + ([] if variant == "off" else ["hobl_realpath_lab.py", "ntpath-realpath.patch"]))
+                self.assertTrue(scenario._call.call_args.args[0][1].endswith(f"-Workers 20 -CovVariant combined -RealpathVariant {variant}"))
 
     def test_neither_package_can_fall_back_to_the_installed_copy(self):
         with tempfile.TemporaryDirectory() as tmp:

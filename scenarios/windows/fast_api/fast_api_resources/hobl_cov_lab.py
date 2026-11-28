@@ -48,7 +48,42 @@ def apply_delta(git, overlay, target, patch_name, strip):
                    cwd=overlay, input=delta.encode("utf-8"), check=True)
 
 
-def prepare(overlay):
+def prepare_realpath(git, overlay, variant):
+    import marshal
+    import ntpath
+    from types import CodeType
+
+    if variant not in ("stock", "exact") or sys.platform != "win32" or sys.implementation.name != "cpython" or sys.version_info[:3] != (3, 12, 10):
+        raise ValueError("The realpath lab requires Windows CPython 3.12.10 and variant 'stock' or 'exact'")
+    frozen = ntpath.realpath.__code__
+    source = Path(ntpath.__file__).resolve(strict=True)
+    check_source(source, "0ddb6ebfe8cb6e2d2af73136a0792bd99c951a909635d79fe9d931980ed2986e")
+    root = overlay / "realpath"
+    root.mkdir()
+    (root / "receipts").mkdir()
+    target = root / "ntpath.py"
+    shutil.copyfile(source, target)
+
+    def function_code():
+        module = compile(target.read_bytes(), frozen.co_filename, "exec", dont_inherit=True)
+        code, = (c for c in module.co_consts if isinstance(c, CodeType)
+                 and c.co_name == "realpath" and "_getfinalpathname" in c.co_names)
+        return code
+
+    if frozen.co_filename != "<frozen ntpath>" or function_code() != frozen:
+        raise RuntimeError("The installed source does not match the running frozen ntpath.realpath")
+    if variant == "exact":
+        apply_delta(git, root, target, "ntpath-realpath.patch", 2)
+    (root / "code.bin").write_bytes(marshal.dumps(function_code(), 2))
+    (root / "settings.json").write_text(json.dumps({"variant": variant, "python": sys.executable}), encoding="utf-8")
+    package = overlay / "coverage"
+    shutil.copyfile(Path(__file__).with_name("hobl_realpath_lab.py"), package / "_hobl_realpath_lab.py")
+    # The private coverage import reaches xdist and subprocess measurement without a site-wide .pth.
+    with (package / "__init__.py").open("a", encoding="utf-8") as stream:
+        stream.write("\nfrom . import _hobl_realpath_lab\n_hobl_realpath_lab.activate()\n")
+
+
+def prepare(overlay, realpath_variant="off"):
     if overlay.name not in VARIANTS:
         raise ValueError(f"Unknown coverage lab variant: {overlay.name}")
     report, reader = VARIANTS[overlay.name]
@@ -76,6 +111,8 @@ def prepare(overlay):
     check_source(sqldata, SQLDATA_SHA256[reader])
     shutil.copyfile(__file__, overlay / Path(__file__).name)
     (overlay / "source.txt").write_text(str(Path.cwd().resolve()), encoding="utf-8")
+    if realpath_variant != "off":
+        prepare_realpath(git, overlay, realpath_variant)
     print(f"Prepared {overlay.name} in {overlay} from {pytest_cov} and {coverage}")
 
 
@@ -118,10 +155,16 @@ def timed_report(controller, data_class, receipt, path):
 
 def pytest_sessionstart(session):
     """One receipt from the actual coverage controller, not a separate preflight import."""
-    if hasattr(session.config, "workerinput") or os.environ.get("PYTEST_CURRENT_TEST"):
+    experiment = sys.modules.get("coverage._hobl_realpath_lab")
+    worker = hasattr(session.config, "workerinput")
+    if (worker and experiment is None) or os.environ.get("PYTEST_CURRENT_TEST"):
         return
     overlay = Path(__file__).resolve().parent
     if session.config.rootpath.resolve() != Path((overlay / "source.txt").read_text(encoding="utf-8")):
+        return
+    if experiment is not None:
+        experiment.record_pytest(session.config)
+    if worker:
         return
     plugin = session.config.pluginmanager.getplugin("_cov")
     if plugin is None or plugin.cov_controller is None:
@@ -147,4 +190,10 @@ def pytest_sessionstart(session):
 
 
 if __name__ == "__main__":
-    prepare(Path(sys.argv[1]).resolve())
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("overlay", type=Path)
+    parser.add_argument("realpath_variant", choices=("off", "stock", "exact"), nargs="?", default="off")
+    args = parser.parse_args()
+    prepare(args.overlay.resolve(), args.realpath_variant)

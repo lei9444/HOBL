@@ -6,7 +6,9 @@ param(
     [string]$startTime = (Get-Date).ToString("o"),
     [string]$Workers = "0",
     [ValidateSet("stock", "reuse", "combined")]
-    [string]$CovVariant = "combined"
+    [string]$CovVariant = "combined",
+    [ValidateSet("off", "stock", "exact")]
+    [string]$RealpathVariant = "off"
 )
 # Require PowerShell > 7
 $required = [version]"7.0"
@@ -378,14 +380,14 @@ $savedPlugins = $env:PYTEST_PLUGINS
 $savedPythonPath = $env:PYTHONPATH
 New-Item -ItemType Directory -Path $labRoot -ErrorAction Stop | Out-Null
 try {
-    & $venvPython -I -B (Join-Path $PSScriptRoot "hobl_cov_lab.py") $overlay 2>&1 | log
+    & $venvPython -I -B (Join-Path $PSScriptRoot "hobl_cov_lab.py") $overlay $RealpathVariant.ToLowerInvariant() 2>&1 | log
     if ($LASTEXITCODE -ne 0) {
-        " ERROR - Could not prepare coverage lab variant '$CovVariant'; refusing to record a timing." | log
+        " ERROR - Could not prepare coverage '$CovVariant' / realpath '$RealpathVariant'; refusing to record a timing." | log
         Exit 1
     }
     $env:PYTHONPATH = "$overlay$([IO.Path]::PathSeparator)$savedPythonPath"
     $env:PYTEST_PLUGINS = if ($savedPlugins) { "$savedPlugins,hobl_cov_lab" } else { "hobl_cov_lab" }
-    "Running tests with coverage ($CovVariant); test output: $testLog" | log
+    "Running tests with coverage ($CovVariant), realpath ($RealpathVariant); test output: $testLog" | log
     Write-RunPhaseMarker "phase.run_test.start"
     $testTime = (Measure-Command {
         & $venvPython -m pytest -n $Workers --dist $distribution --cov --cov-context=test --cov-report=term tests "scripts\tests" *> $testLog
@@ -401,7 +403,15 @@ try {
         " ERROR - The pytest controller did not confirm the requested coverage lab variant. See $testLog." | log
         Exit 1
     }
+    if ($testExitCode -eq 0 -and $RealpathVariant -ne "off") {
+        & $venvPython -I -B (Join-Path $PSScriptRoot "hobl_realpath_lab.py") $overlay $RealpathVariant.ToLowerInvariant() $Workers 2>&1 | log
+        if ($LASTEXITCODE -ne 0) {
+            " ERROR - Realpath implementation was not verified in every required process; refusing to record a timing." | log
+            Exit 1
+        }
+    }
     $trial = Get-Content -LiteralPath $receipt -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    $trial["realpath_requested"] = $RealpathVariant.ToLowerInvariant()
     $reportTime = $trial["coverage_report_time_s"]
     $bitmapReadTime = $trial["coverage_bitmap_read_time_s"]
     if ($testExitCode -eq 0 -and ($null -eq $reportTime -or $null -eq $bitmapReadTime -or
