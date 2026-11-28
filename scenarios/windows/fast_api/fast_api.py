@@ -21,9 +21,26 @@ class FastApi(core.app_scenario.Scenario):
 
     # Set default parameters
     Params.setDefault(module, 'loops', '5')
-    Params.setDefault(module, 'workers', '0')
+    Params.setDefault(module, 'workers', 'auto', desc="pytest-xdist worker count; use 0 for serial execution.")
     Params.setDefault(module, 'cov_variant', 'combined', desc="Lab coverage report implementation.", valOptions=['stock', 'reuse', 'combined'])
     Params.setDefault(module, 'realpath_variant', 'off', desc="Windows CPython realpath lab experiment.", valOptions=['off', 'stock', 'exact'])
+
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.bare or self.is_prep or self.is_tool or self.is_prep_tool or self.platform.lower() != 'windows':
+            return
+
+        from tools.power_mode import Tool as PowerMode
+        power = next((tool for tool in self.tool_instances if isinstance(tool, PowerMode)), None)
+        if power is None:
+            power = PowerMode(is_tool=True, scenario=self)
+            self.tool_instances.append(power)
+        # Set the default on this tool instance only; HOBL handles activation and cleanup.
+        if 'mode' in Params.getFileParams('power_mode') or 'mode' in Params.getOverrides('power_mode'):
+            power.mode = Params.get('power_mode', 'mode').lower()
+        else:
+            power.mode = 'best performance'
 
 
     def setUp(self):

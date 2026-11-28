@@ -69,10 +69,13 @@ class CovReportLabTests(unittest.TestCase):
         scenario._upload = Mock()
         scenario._call = Mock()
         base = ["fast_api_run.ps1", "hobl_cov_lab.py", "report-reuse.patch", "coverage-bitmap.patch"]
-        for variant in ("off", "stock", "exact"):
+        for variant, workers in (("off", None), ("stock", "0"), ("exact", "20")):
             scenario._upload.reset_mock()
-            params = {"platform": "Windows", "loops": "1", "workers": "20", "cov_variant": "combined", "realpath_variant": variant}
-            with self.subTest(realpath=variant), patch.object(fast_api.Params, "get", side_effect=lambda section, key: params[key]), \
+            profile = {"global": {"platform": "Windows"}, "fast_api": {"loops": "1", "realpath_variant": variant}}
+            if workers is not None:
+                profile["fast_api"]["workers"] = workers
+            with self.subTest(realpath=variant), patch.dict(fast_api.Params.fileParams, profile, clear=True), \
+                    patch.dict(fast_api.Params.overrides, clear=True), \
                     patch.object(fast_api.core.app_scenario.Scenario, "setUp"):
                 scenario.setUp()
                 scenario.runTest()
@@ -84,7 +87,36 @@ class CovReportLabTests(unittest.TestCase):
                     self.assertTrue((Path(__file__).resolve().parents[1] / "fast_api_resources" / Path(source).name).is_file())
                     uploaded.append(Path(source).name)
                 self.assertCountEqual(uploaded, base + ([] if variant == "off" else ["hobl_realpath_lab.py", "ntpath-realpath.patch"]))
-                self.assertTrue(scenario._call.call_args.args[0][1].endswith(f"-Workers 20 -CovVariant combined -RealpathVariant {variant}"))
+                self.assertTrue(scenario._call.call_args.args[0][1].endswith(f"-Workers {workers or 'auto'} -CovVariant combined -RealpathVariant {variant}"))
+
+    def test_fastapi_power_tool_respects_profile_and_cli_without_changing_other_scenarios(self):
+        from tools.power_mode import Tool as PowerMode
+
+        params = fast_api.Params
+        globals_ = dict(platform="Windows", dut_coord_scaler="1", hobl_external="", prep_tools="")
+        original_mode = PowerMode.mode
+        for tools, profile_mode, cli_mode, expected in (
+            ("run_report", {}, {}, "best performance"),
+            ("run_report power_mode", {"mode": "better"}, {}, "better"),
+            ("run_report power_mode", {"mode": "better"}, {"mode": "recommended/balanced"}, "recommended/balanced"),
+        ):
+            profile = {"global": dict(globals_, tools=tools), "power_mode": profile_mode}
+            with self.subTest(tools=tools, mode=expected), patch.dict(params.fileParams, profile, clear=True), \
+                    patch.dict(params.overrides, {"power_mode": cli_mode}, clear=True), \
+                    patch.dict(params.calculated, {"dut_alive": "0"}, clear=True):
+                scenario = fast_api.FastApi()
+                self.assertEqual([tool.module for tool in scenario.tool_instances], ["run_report", "power_mode"])
+                power = scenario.tool_instances[-1]
+                self.assertEqual(power.mode, expected)
+                self.assertEqual(params.get("global", "tools"), tools)
+                self.assertEqual(PowerMode.mode, original_mode)
+                with patch.object(power, "power_manager_call", return_value=True), \
+                        patch.object(power, "save_and_set_power_mode") as activate, \
+                        patch.object(power, "restore_power_mode") as restore:
+                    scenario.toolCallBacks("initCallback")
+                    self.assertEqual([c.args for c in activate.call_args_list], [("AC",), ("DC",)])
+                    scenario.doCleanups()
+                    self.assertEqual([c.args for c in restore.call_args_list], [("AC",), ("DC",)])
 
     def test_neither_package_can_fall_back_to_the_installed_copy(self):
         with tempfile.TemporaryDirectory() as tmp:

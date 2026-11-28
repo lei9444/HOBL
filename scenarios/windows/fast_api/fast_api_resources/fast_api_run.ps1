@@ -4,7 +4,7 @@
 param(
     [string]$logFile = "",
     [string]$startTime = (Get-Date).ToString("o"),
-    [string]$Workers = "0",
+    [string]$Workers = "auto",
     [ValidateSet("stock", "reuse", "combined")]
     [string]$CovVariant = "combined",
     [ValidateSet("off", "stock", "exact")]

@@ -40,9 +40,16 @@ python -m pytest -n auto --dist loadgroup --cov --cov-context=test tests scripts
 - The PEP 517 build spins up its own isolated environment. On a proxied corporate network,
   set `$env:UV_DEFAULT_INDEX` (uv) and `$env:PIP_INDEX_URL` (pip) to your approved PyPI mirror.
 - HOBL default: 5 loops (each loop = build + test). Works on x64 and ARM64.
-- Set `fast_api:workers=auto` or a non-negative integer to select pytest workers;
-  the default `0` keeps tests serial. On macOS, use `mac_fast_api:workers`.
-  Example: `hobl.cmd -s fast_api fast_api:loops=1 fast_api:workers=auto`.
+- On this lab branch, Windows FastAPI defaults to `fast_api:workers=auto`:
+  pytest-xdist selects the worker count on the DUT. An explicit count still
+  wins (including `0` for serial). macOS keeps its own `mac_fast_api:workers` default.
+- For HOBL runs of Windows FastAPI, the `power_mode` tool automatically sets
+  the DUT to **Best performance** before measurement and restores the previous
+  mode at test end or cleanup. No change to `global:tools` is needed. An explicit
+  `[power_mode] mode` in the profile or `power_mode:mode` on the command line
+  takes precedence. See `hobl.log` for the power tool's settings and
+  `fast_api_test.log` for the actual worker count. Running the PowerShell
+  workload directly does not invoke HOBL's power tool.
 - For serial runs, use `pytest -n 0 --dist no` with the same coverage options and test paths.
 
 ## Windows lab: coverage report variants
@@ -58,13 +65,14 @@ python -m pytest -n auto --dist loadgroup --cov --cov-context=test tests scripts
 0.162.5 build, tests and per-test coverage, with private copies of both packages.
 No package is installed into or changed in the prepared venv.
 
-Example for a previously prepared N1X using 20 workers (replace the profile path):
+Example for a previously prepared N1X (replace the profile path). To reproduce
+a fixed 20-worker series, add `fast_api:workers=20` to every run:
 
 ```powershell
-.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=stock
-.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=combined
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:cov_variant=stock
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:cov_variant=combined
 # Optional: previously tested pytest-cov optimization alone
-.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=reuse
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:cov_variant=reuse
 ```
 
 If the lab host is already on `lei9444-fastapi-cov-reuse-lab`, run `git pull --ff-only`.
@@ -106,14 +114,14 @@ it does not affect the earlier `uv build` or interpreter startup before the
 coverage import. Neither arm edits shared pyenv files or the scenario venv.
 No new prep is needed on a valid prep-11 DUT.
 
-On the same prepared N1X, keep the same drive, power mode, FastAPI checkout,
-coverage variant and worker count in both profiles:
+On the same prepared N1X, use the same drive and FastAPI checkout. With no
+power or worker override, both runs use Best performance and `workers=auto`:
 
 ```powershell
 # A: control
-.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=combined fast_api:realpath_variant=stock
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:cov_variant=combined fast_api:realpath_variant=stock
 # B: candidate (only realpath changes)
-.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:workers=20 fast_api:cov_variant=combined fast_api:realpath_variant=exact
+.\hobl.cmd -p ".\lab-profile.ini" -s fast_api fast_api:loops=1 fast_api:cov_variant=combined fast_api:realpath_variant=exact
 ```
 
 Exclude one warmup for each arm, then run `AB, BA, BA, AB` on the same DUT.
@@ -123,7 +131,8 @@ report/bitmap timers. Report `scenario_runtime` as Build + Test and keep
 last-loop CSV. Keep `fast_api_cov_trials.jsonl`, `fast_api_test.log` and
 `fast_api_results.csv` with each run. A successful opt-in row must include
 the actual `realpath_variant`, `realpath_code_sha256` (SHA-256 of the full
-serialized function code), `realpath_workers` (20 in this example) and
+serialized function code), `realpath_workers` (the actual count; check that
+it matches across arms when using `auto`) and
 `realpath_telemetry_children` (43). The controller, workers and exact set of
 isolated telemetry calls must attest the requested code or the run fails.
 There is no per-path timer in either arm.
